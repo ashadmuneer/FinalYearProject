@@ -16,6 +16,56 @@ from pandas import to_datetime
 # Set page configuration
 st.set_page_config(page_title="Stock Forecast with Sentiment Analysis", layout="wide")
 
+# Custom CSS for news card styling
+st.markdown("""
+<style>
+.news-card {
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
+.news-card img {
+    max-width: 100%;
+    width: 100%;
+    border-radius: 8px;
+    object-fit: cover;
+}
+.news-link {
+    color: #1e90ff;
+    text-decoration: none;
+}
+.news-link:hover {
+    text-decoration: underline;
+}
+.news-source {
+    color: #6f6f6f;
+    font-style: italic;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Sidebar navigation
+st.sidebar.title("Navigation")
+page = st.sidebar.radio(
+    "Go to",
+    ["Stock Prediction", "Stock Compare", "Demo Trading"],
+    index=0
+)
+
+# Map page selection to file names (assuming multi-page app structure)
+page_mapping = {
+    "Stock Prediction": "app.py",
+    "Stock Compare": "pages/1_Stock_Compare.py",
+    "Demo Trading": "pages/2_Demo_Trading.py"
+}
+
+# Display warning if navigating to another page
+if page != "Stock Prediction":
+    st.warning(f"Please navigate to the '{page}' page using the sidebar.")
+    st.stop()
+
 # Constants
 START = (date.today() - timedelta(days=5 * 365)).strftime("%Y-%m-%d")
 TODAY = date.today().strftime("%Y-%m-%d")
@@ -25,7 +75,7 @@ PLACEHOLDER_IMAGE = "https://via.placeholder.com/150?text=No+Image"
 
 st.title("Stock Forecast with Sentiment Analysis")
 
-# Stock ticker symbols (without .NS or .BS)
+# Stock ticker symbols
 stocks = (
     "TCS", "LTIM", "SBIN", "INFY", "ICICIBANK", "HDFCBANK",
     "AXISBANK", "BAJAJFINANCE", "WIPRO", "ITC", "POWERGRID",
@@ -85,31 +135,26 @@ def fetch_news(ticker):
     try:
         url = f"https://news.google.com/rss/search?q={ticker}+stock"
         response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.content, "xml")
-        articles = soup.find_all("item")[:10]  # Limit to 10 articles
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "lxml-xml")  # Use lxml-xml parser
+        articles = soup.find_all("item")[:10]
         news_data = []
         
         for article in articles:
             title = article.title.text
-            # Clean description by removing HTML tags
             description_html = article.description.text
             description_soup = BeautifulSoup(description_html, "html.parser")
             description = description_soup.get_text()
-            
-            # Extract news source from description (e.g., "Equitymaster")
             source = "Unknown"
             font_tag = description_soup.find("font")
             if font_tag:
                 source = font_tag.get_text()
-            
             pub_date = article.pubDate.text
             link = article.link.text
             try:
                 pub_date = datetime.strptime(pub_date, "%a, %d %b %Y %H:%M:%S %Z")
             except ValueError:
-                pub_date = datetime.now()  # Fallback to current date
-            
-            # Fetch image from article webpage
+                pub_date = datetime.now()
             image_url = PLACEHOLDER_IMAGE
             try:
                 article_response = requests.get(link, timeout=5)
@@ -118,8 +163,9 @@ def fetch_news(ticker):
                 if og_image and og_image["content"]:
                     image_url = og_image["content"]
             except Exception:
-                pass  # Use placeholder if image fetch fails
-            
+                pass
+            # Validate image_url
+            image_url = image_url if image_url and image_url.startswith('http') else PLACEHOLDER_IMAGE
             news_data.append((title, description, pub_date, link, image_url, source))
         return news_data
     except Exception as e:
@@ -135,8 +181,6 @@ def analyze_sentiment(news_data, data_dates):
         pub_date = to_datetime(pub_date).date()
         closest_date = min(data_dates, key=lambda x: abs(x.date() - pub_date))
         sentiment_dict[closest_date].append(sentiment)
-    
-    # Average sentiment per day, default to 0 if no news
     sentiment_scores = [np.mean(sentiment_dict[date]) if sentiment_dict[date] else 0 for date in data_dates]
     return sentiment_scores
 
@@ -177,7 +221,7 @@ if news_data:
             st.markdown('<div class="news-card">', unsafe_allow_html=True)
             col1, col2 = st.columns([1, 3])
             with col1:
-                st.image(image_url, use_container_width=True)
+                st.image(image_url, caption="Article Image")  # Removed use_container_width
             with col2:
                 st.markdown(f"**Article {i+1}: {title}**")
                 st.markdown(f'<span class="news-source">{source}</span>', unsafe_allow_html=True)
@@ -197,10 +241,8 @@ data["Day"] = range(len(data))
 data["SMA_5"] = data["Close"].rolling(window=5).mean()
 data["SMA_20"] = data["Close"].rolling(window=20).mean()
 data["Volatility"] = data["Close"].rolling(window=5).std()
-
-# Interpolate NaN values
 data.interpolate(method="linear", inplace=True)
-data.dropna(inplace=True)  # Drop any remaining NaNs
+data.dropna(inplace=True)
 
 # Prophet model
 prophet_data = data[["Date", "Close"]].rename(columns={"Date": "ds", "Close": "y"})
@@ -214,8 +256,6 @@ X = data[["Day", "Sentiment", "SMA_5", "SMA_20", "Volatility"]]
 y = data["Close"]
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
-
-# Split data for evaluation
 X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
 model = RandomForestRegressor(n_estimators=100, random_state=42)
 model.fit(X_train, y_train)
@@ -229,7 +269,6 @@ future_prices = []
 last_sma_5 = data["SMA_5"].iloc[-5:].tolist()
 last_sma_20 = data["SMA_20"].iloc[-20:].tolist()
 last_volatility = data["Volatility"].iloc[-1]
-last_close = data["Close"].iloc[-1]
 
 for i in range(n_days):
     future_day = pd.DataFrame({
@@ -242,8 +281,6 @@ for i in range(n_days):
     future_day_scaled = scaler.transform(future_day)
     pred_price = model.predict(future_day_scaled)[0]
     future_prices.append(pred_price)
-    
-    # Update rolling features
     last_sma_5.append(pred_price)
     last_sma_5 = last_sma_5[-5:]
     last_sma_20.append(pred_price)
